@@ -26,8 +26,13 @@ class ActorNumpy(object):
         self.weights = new_weights
 
     def save_weights(self, fname):
-        with open(fname, 'wb') as f:
-            pickle.dump(self.weights, f, -1)
+        try:
+            with open(fname, 'wb') as f:
+                pickle.dump(self.weights, f, -1)
+        except:
+            print('#############################################')
+            print('pickle.dump(self.weights, f, -1)')
+            print('#############################################')
 
     def act(self, s):
         x = s
@@ -80,18 +85,25 @@ def get_noisy_weights(params, sigma):
     return weights
 
 
-def run_agent(model_params, weights, state_transform, data_queue, weights_queue,
+def run_agent(args, model_params, weights, data_queue, weights_queue,
               process, global_step, updates, best_reward, param_noise_prob, save_dir,
               max_steps=10000000):
 
-    train_fn, actor_fn, target_update_fn, params_actor, params_crit, actor_lr, critic_lr = \
-        build_model(**model_params)
+    train_fn, actor_fn, target_update_fn, params_actor, params_crit, actor_lr, critic_lr = build_model(**model_params)
     actor = Agent(actor_fn, params_actor, params_crit)
     actor.set_actor_weights(weights)
 
-    env = RunEnv2(state_transform, max_obstacles=config.num_obstacles, skip_frame=config.skip_frames)
-    random_process = OrnsteinUhlenbeckProcess(theta=.1, mu=0., sigma=.2, size=env.noutput,
-                                              sigma_min=0.05, n_steps_annealing=1e6)
+    env = RunEnv2(model=args.modeldim, prosthetic=args.prosthetic, difficulty=args.difficulty, skip_frame=config.skip_frames)
+    # random_process = OrnsteinUhlenbeckProcess(theta=.1, mu=0., sigma=.3, size=env.noutput, sigma_min=0.05, n_steps_annealing=1e6)
+
+    sigma_rand = random.uniform(0.05, 0.5)
+    dt_rand = random.uniform(0.002, 0.02)
+    param_noise_prob = random.uniform(param_noise_prob * 0.25, min(param_noise_prob * 1.5, 1.))
+
+    random_process = OrnsteinUhlenbeckProcess(theta=.1, mu=0., sigma=sigma_rand, dt=dt_rand, size=env.noutput, sigma_min=0.05, n_steps_annealing=1e6)
+
+    print('OUProcess_sigma = ' + str(sigma_rand) + '    OUProcess_dt = ' + str(dt_rand) + '    param_noise_prob = ' + str(param_noise_prob))
+
     # prepare buffers for data
     states = []
     actions = []
@@ -103,7 +115,7 @@ def run_agent(model_params, weights, state_transform, data_queue, weights_queue,
     action_noise = True
     while global_step.value < max_steps:
         seed = random.randrange(2**32-2)
-        state = env.reset(seed=seed, difficulty=2)
+        state = env.reset(seed=seed, difficulty=args.difficulty)
         random_process.reset_states()
 
         total_reward = 0.
@@ -117,7 +129,7 @@ def run_agent(model_params, weights, state_transform, data_queue, weights_queue,
             if action_noise:
                 action += random_process.sample()
 
-            next_state, reward, next_terminal, info = env.step(action)
+            next_state, reward, next_terminal, info = env._step(action)
             total_reward += reward
             total_reward_original += info['original_reward']
             steps += 1
@@ -158,14 +170,19 @@ def run_agent(model_params, weights, state_transform, data_queue, weights_queue,
         # receive weights and set params to weights
         weights = weights_queue.get()
 
-        report_str = 'Global step: {}, steps/sec: {:.2f}, updates: {}, episode len {}, ' \
-                     'reward: {:.2f}, original_reward {:.4f}; best reward: {:.2f} noise {}'. \
-            format(global_step.value, 1. * global_step.value / (time() - start), updates.value, steps,
-                   total_reward, total_reward_original, best_reward.value, 'actions' if action_noise else 'params')
+        # report_str = 'Global step: {}, steps/sec: {:.2f}, updates: {}, episode len: {}, pelvis_X: {:.2f}, reward: {:.2f}, original_reward {:.4f}, best reward: {:.2f}, noise: {}'. \
+        #     format(global_step.value, 1. * global_step.value / (time() - start), updates.value, steps, info['pelvis_X'], total_reward, total_reward_original, best_reward.value, 'actions' if action_noise else 'params')
+        report_str = 'Global step: {}, steps/sec: {:.2f}, updates: {}, episode len: {}, pelvis_X: {:.2f}, reward: {:.2f}, best reward: {:.2f}, noise: {}'. \
+            format(global_step.value, 1. * global_step.value / (time() - start), updates.value, steps, info['pelvis_X'], total_reward, best_reward.value, 'actions' if action_noise else 'params')
         print(report_str)
 
-        with open(os.path.join(save_dir, 'train_report.log'), 'a') as f:
-            f.write(report_str + '\n')
+        try:
+            with open(os.path.join(save_dir, 'train_report.log'), 'a') as f:
+                f.write(report_str + '\n')
+        except:
+            print('#############################################')
+            print('except  »  with open(os.path.join(save_dir, train_report.log), a) as f:')
+            print('#############################################')
 
         actor.set_actor_weights(weights)
         action_noise = np.random.rand() < 1 - param_noise_prob
@@ -179,4 +196,6 @@ def run_agent(model_params, weights, state_transform, data_queue, weights_queue,
         del terminals[:]
 
         if total_episodes % 100 == 0:
-            env = RunEnv2(state_transform, max_obstacles=config.num_obstacles, skip_frame=config.skip_frames)
+            env = RunEnv2(model=args.modeldim,
+                    prosthetic=args.prosthetic, difficulty=args.difficulty,
+                    skip_frame=config.skip_frames)
